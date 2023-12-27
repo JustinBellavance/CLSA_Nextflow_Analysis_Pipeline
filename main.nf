@@ -372,7 +372,7 @@ process SPLIT_PHENO{
     """ 
     num_cols=\$(awk '{print NF; exit}' $phenos)
 
-    for i in {3..\$num_cols}
+    for (( i=3; i<=\$num_cols; i++ ))
     do
         awk -v i=\${i} '{print \$1 "\t" \$2 "\t" \$i}' $phenos > phenotype_\${i}.txt
     done
@@ -477,7 +477,6 @@ process SUBSET_BGEN {
     label 'PLINK2_Subset'
     scratch false
     publishDir "$params.OutDir/bgen", mode: "copy"
-    cache 'lenient'
 
     input:
         each(bgen)
@@ -496,6 +495,28 @@ process SUBSET_BGEN {
     --remove $non_euro \
     --make-pgen \
     --out clsa_imp_${chrom}_euro
+    """
+}
+
+process ADD_SEX_TO_SAMPLE{
+    label 'QC'
+    scratch false
+    publishDir "$params.OutDir/bgen", mode: "copy"
+
+    input:
+        path(sample_nosex)
+        path(clsa_plink)
+
+    output:
+        val("clsa_imp_v3_withsex.sample")
+
+    //take info from clsa_gen_v3.fam file
+    script:
+    fam = "${clsa_plink.getParent()}/clsa_gen_v3.fam"
+    //remove sample file header.
+    """
+    head -n 1 $sample_nosex > clsa_imp_v3_withsex.sample
+    join -j 1 -o 1.1,1.2,1.3,2.5 <(tail -n +2 $sample_nosex | sort -k1) <(sort -k1 $fam) >> clsa_imp_v3_withsex.sample
     """
 }
 
@@ -853,6 +874,7 @@ workflow {
     genotypeQCed = GENOTYPE_QC_2(genotype_QC_1.plink_files, fail_het, params.mqc, params.sqc) //run the genotype QC
     phenotypeQCed = QUANT_PHENOTYPE_QC(genotypeQCed.plink_files, genotypeQCed.plink_sexcheck, params.sqc, params.base_phenotypes) //create formatted phenotype and covariate file for regenie
     split_phenos = SPLIT_PHENO(phenotypeQCed.phenotypes)
+    sample_file = ADD_SEX_TO_SAMPLE(params.clsa_samples, params.clsa_plink)
 
     //step 1 regenie
     step1 = REGENIE_STEP1(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates)
@@ -861,7 +883,7 @@ workflow {
 
     //preperation for step 2
     bgens = Channel.fromPath(params.clsa_bgen)
-    euro_pgens = SUBSET_BGEN(bgens, params.clsa_samples, genotype_QC_1.non_euro)
+    euro_pgens = SUBSET_BGEN(bgens, sample_file, genotype_QC_1.non_euro)
 
     //need to find a way to NOT hardcode this..
     phenotypes_cols = [3,4,5,6,7,8,9,10,11,12,13,14,15,16]
