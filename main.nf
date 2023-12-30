@@ -15,11 +15,11 @@ process LIFTOVER_1 {
     plink_file = files(clsa_plink)[0]
     plink_prefix = "${plink_file.getParent()}/${plink_file.getSimpleName()}" //path + prefix
     """
-    awk 'NR > 1 {if(\$7 == 1){print \$1"\t"\$1}}' $sqc > remove_sqc.txt
+    awk 'NR > 1 {if(\$7 == 1 || \$3 != \$4 || \$3 == 0 || \$4 == 0 ){print \$1"\t"\$1}}' $sqc > remove_sqc.txt
 
-    awk 'NR > 1 {if(\$8 == 1 || \$9 == 1 || \$10 == 1 || \$11 == 1 || \$12 == 1 || \$13 == 1){print \$1"\t"\$1}}' clsa_mqc_v3.txt > exclude_mqc.txt
+    awk 'NR > 1 {if(\$8 == 1 || \$9 == 1 || \$10 == 1 || \$11 == 1 || \$12 == 1 || \$13 == 1){print \$1}}' $mqc > exclude_mqc.txt
 
-    plink --bfile $plink_prefix --remove remove_sqc.txt --exclude exclude_mqc.txt --make-bed --out clsa_gen_v3_filtered
+    plink --bfile $plink_prefix --remove remove_sqc.txt --exclude exclude_mqc.txt --keep-allele-order --make-bed --out clsa_gen_v3_filtered
 
     plink --bfile clsa_gen_v3_filtered --make-bed --out clsa_gen_v3_sort
     plink --bfile clsa_gen_v3_sort --merge-x --make-bed --out clsa_gen_v3_sort_merged
@@ -505,18 +505,20 @@ process ADD_SEX_TO_SAMPLE{
 
     input:
         path(sample_nosex)
-        path(clsa_plink)
+        val(clsa_plink)
 
     output:
-        val("clsa_imp_v3_withsex.sample")
+        path("clsa_imp_v3_withsex.sample")
 
     //take info from clsa_gen_v3.fam file
     script:
-    fam = "${clsa_plink.getParent()}/clsa_gen_v3.fam"
-    //remove sample file header.
+    plink_file = files(clsa_plink)[0]
+    fam = "${plink_file.getParent()}/clsa_gen_v3.fam"
     """
-    head -n 1 $sample_nosex > clsa_imp_v3_withsex.sample
-    join -j 1 -o 1.1,1.2,1.3,2.5 <(tail -n +2 $sample_nosex | sort -k1) <(sort -k1 $fam) >> clsa_imp_v3_withsex.sample
+    head -n 1 $sample_nosex > temp
+    echo -e '0\t0\t0\tD' >> temp
+    LANG=en_EN join -j 1 -a1 -o 1.1,1.2,1.3,2.5 <(tail -n +3 $sample_nosex | LANG=en_EN sort -k1) <(LANG=en_EN sort -k1 $fam) >> temp
+    awk '{print \$1"\t"\$2"\t"\$3"\t"(\$4!=""?\$4:"NA")}' temp > clsa_imp_v3_withsex.sample
     """
 }
 
@@ -576,7 +578,6 @@ process REGENIE_STEP2_MALE {
         val(phenotypes)
         val(covariates)
         val(fit_pred)
-        path(done)
 
     output:
         path("results*.regenie")
@@ -623,7 +624,6 @@ process REGENIE_STEP2_FEMALE {
         val(phenotypes)
         val(covariates)
         val(fit_pred)
-        path(done)
 
     output:
         path("results*.regenie")
@@ -861,22 +861,39 @@ process CREATE_CONFIG_PY {
 
 workflow {
 
-    //liftover
-    bfiles_sorted = LIFTOVER_1(params.clsa_plink, params.mqc, params.sqc)
+    //liftover -------------------------------------------------------------
+
+    // remove markers and samples deemed not good by CLSA, merge par regions with X chromosme
+    bfiles_sorted = LIFTOVER_1(params.clsa_plink, params.mqc, params.sqc) 
+
+    //BIM_TO_BED python script to convert to uscs bed format (for future use)
     ucsc_bed = BIM_TO_BED(bfiles_sorted)
+
+    //use bed files, and chain to perform the liftover.
     bfiles_hg38 = LIFTOVER_2(ucsc_bed, params.chain, bfiles_sorted)
+
+    //use fasta to filter out any ambiguous markers and any non variants that are one character.
     p2r_output = PLINK2REFERENCE(bfiles_hg38, params.fasta)
+
+    //using output from plink2reference python script, implement filteres to final output.
     lifted = LIFTOVER_3(p2r_output.remove, p2r_output.strand_flip, p2r_output.force_a1, bfiles_hg38)
 
-    //QC scripts    
-    genotype_QC_1 = GENOTYPE_QC_1(lifted, params.anderson_bed_gz, params.dust_masker_gz, params.mqc) //run the genotype QC
+    //Genotype and Phenotype QC ---------------------------------------------------------
+
+    genotype_QC_1 = GENOTYPE_QC_1(lifted, params.anderson_bed_gz, params.dust_masker_gz, params.mqc)
     fail_het = CALC_HET_OUTLIERS(genotype_QC_1.r_check)
-    genotypeQCed = GENOTYPE_QC_2(genotype_QC_1.plink_files, fail_het, params.mqc, params.sqc) //run the genotype QC
-    phenotypeQCed = QUANT_PHENOTYPE_QC(genotypeQCed.plink_files, genotypeQCed.plink_sexcheck, params.sqc, params.base_phenotypes) //create formatted phenotype and covariate file for regenie
+    genotypeQCed = GENOTYPE_QC_2(genotype_QC_1.plink_files, fail_het, params.mqc, params.sqc)
+
+    //create formatted phenotype and covariate file for regenie using R
+    phenotypeQCed = QUANT_PHENOTYPE_QC(genotypeQCed.plink_files, genotypeQCed.plink_sexcheck, params.sqc, params.base_phenotypes)
+    
+    //split phenotype files into seperate files for better parallization
     split_phenos = SPLIT_PHENO(phenotypeQCed.phenotypes)
+
+    //current sample file does not have sex identification, so we will use the .fam file to add sex for sex-specific analyses.
     sample_file = ADD_SEX_TO_SAMPLE(params.clsa_samples, params.clsa_plink)
 
-    //step 1 regenie
+    //step 1 regenie ------------------------------------------------------------------------
     step1 = REGENIE_STEP1(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates)
     step1_male = REGENIE_STEP1_MALE(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
     step1_female = REGENIE_STEP1_FEMALE(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
@@ -885,29 +902,38 @@ workflow {
     bgens = Channel.fromPath(params.clsa_bgen)
     euro_pgens = SUBSET_BGEN(bgens, sample_file, genotype_QC_1.non_euro)
 
-    //need to find a way to NOT hardcode this..
+    //identify all columns that have a phenotype that we want in the phenotype file
+    //will eventually not hard code this
     phenotypes_cols = [3,4,5,6,7,8,9,10,11,12,13,14,15,16]
 
     //step 2 regenie
     //merge phenotypes into one file
     step2_results_both = REGENIE_STEP2(euro_pgens, phenotypes_cols, split_phenos, phenotypeQCed.covariates, step1.fit_pred).collectFile(storeDir: "$params.OutDir/regenie_step2/merged_both", keepHeader : true, sort : 'true')
-    step2_results_male = REGENIE_STEP2_MALE(euro_pgens, phenotypes_cols, split_phenos, phenotypeQCed.covariates_ss, step1_male.fit_pred, step2_results_both).collectFile(storeDir: "$params.OutDir/regenie_step2/merged_male", keepHeader : true, sort : 'true')
-    step2_results_female = REGENIE_STEP2_FEMALE(euro_pgens, phenotypes_cols, split_phenos, phenotypeQCed.covariates_ss, step1_female.fit_pred, step2_results_male).collectFile(storeDir: "$params.OutDir/regenie_step2/merged_male", keepHeader : true, sort : 'true')
+    step2_results_male = REGENIE_STEP2_MALE(euro_pgens, phenotypes_cols, split_phenos, phenotypeQCed.covariates_ss, step1_male.fit_pred).collectFile(storeDir: "$params.OutDir/regenie_step2/merged_male", keepHeader : true, sort : 'true')
+    step2_results_female = REGENIE_STEP2_FEMALE(euro_pgens, phenotypes_cols, split_phenos, phenotypeQCed.covariates_ss, step1_female.fit_pred).collectFile(storeDir: "$params.OutDir/regenie_step2/merged_female", keepHeader : true, sort : 'true')
 
     //transform logp into p using Rscript
     pheweb_ready_both = LOG10P_TO_P_SORT_BOTH(step2_results_both, 'both')
     pheweb_ready_male = LOG10P_TO_P_SORT_MALE(step2_results_male, 'male')
     pheweb_ready_female = LOG10P_TO_P_SORT_FEMALE(step2_results_female, 'female')
 
-    //create pheno-list and config file for pheweb
+    //config file for pheweb
     CREATE_CONFIG_PY()
 
+    // create pheno-list for proper use of PheWeb
     pheno_list_unclosed_both = CREATE_PHENO_LIST_BOTH(pheweb_ready_both).collectFile(storeDir: "$params.OutDir/pheweb/pheno-list_both")
     pheno_list_unclosed_male = CREATE_PHENO_LIST_MALE(pheweb_ready_male).collectFile(storeDir: "$params.OutDir/pheweb/pheno-list_male")
     pheno_list_unclosed_female = CREATE_PHENO_LIST_FEMALE(pheweb_ready_female).collectFile(storeDir: "$params.OutDir/pheweb/pheno-list_female")
     
+    // close the pheno-list as needed by pheweb.
     CLOSE_JSON_BOTH(pheno_list_unclosed_both, 'both')
     CLOSE_JSON_MALE(pheno_list_unclosed_male, 'male')
     CLOSE_JSON_FEMALE(pheno_list_unclosed_female, 'female')
+
+    // now the user can create a pheweb by going to the wanted $params.OutDir/pheweb/* folder and running
+    // $ pheweb process
+
+    // then, when finished:
+    // $ pheweb serve --open
 
 }
