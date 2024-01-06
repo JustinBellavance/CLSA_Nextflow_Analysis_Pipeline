@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 
 module load nextflow
-nextflow run main.nf -resume
+nextflow run main.nf -resume -with-dag flowchart.png
 #nextflow run test.nf
 
 #bash run_pheweb.sh

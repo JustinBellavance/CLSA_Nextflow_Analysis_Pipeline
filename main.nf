@@ -22,8 +22,8 @@ process LIFTOVER_1 {
     plink --bfile $plink_prefix --remove remove_sqc.txt --exclude exclude_mqc.txt --keep-allele-order --make-bed --out clsa_gen_v3_filtered
 
     plink --bfile clsa_gen_v3_filtered --make-bed --out clsa_gen_v3_sort
-    plink --bfile clsa_gen_v3_sort --merge-x --make-bed --out clsa_gen_v3_sort_merged
-    plink --bfile clsa_gen_v3_sort_merged --make-bed --output-chr chrMT --out clsa_gen_v3_sort_chr
+    #plink --bfile clsa_gen_v3_sort --merge-x --make-bed --out clsa_gen_v3_sort_merged
+    plink --bfile clsa_gen_v3_sort --make-bed --output-chr chrMT --out clsa_gen_v3_sort_chr
     """
 }
 
@@ -190,9 +190,9 @@ process GENOTYPE_QC_1 {
         val(sqc)
 
     output:
-        path("R_check.het"), emit : r_check
         tuple path("clsa_gen_v3_1_23_Hg38_6.bed"), path("clsa_gen_v3_1_23_Hg38_6.bim"), path("clsa_gen_v3_1_23_Hg38_6.fam"), emit : plink_files
         path("non_euro.txt"), emit: non_euro
+        path("plink.sexcheck"), emit: plink_sexcheck
 
     script:
     """
@@ -201,8 +201,8 @@ process GENOTYPE_QC_1 {
     
     plink --bfile clsa_gen_v3_1_23_Hg38_x --remove non_euro.txt --make-bed -out clsa_gen_v3_1_23_Hg38_euro
     
-    gzip -d $anderson_bed_gz | awk '{print \$0"\t"1}' > HG38.Anderson2010.set
-    gzip -d $dust_masker_gz | awk '{print \$0"\t"1}' > HG38.dust_masker.set
+    gzip -f -d $anderson_bed_gz | awk '{print \$0"\t"1}' > HG38.Anderson2010.set
+    gzip -f -d $dust_masker_gz | awk '{print \$0"\t"1}' > HG38.dust_masker.set
     
     plink --bfile clsa_gen_v3_1_23_Hg38_euro --exclude 'range' HG38.Anderson2010.set --make-bed --out clsa_gen_v3_1_23_Hg38_euro_clean_1 
     plink --bfile clsa_gen_v3_1_23_Hg38_euro_clean_1 --exclude 'range' HG38.dust_masker.set --make-bed --out clsa_gen_v3_1_23_Hg38_euro_clean  
@@ -217,10 +217,11 @@ process GENOTYPE_QC_1 {
     plink --bfile clsa_gen_v3_1_23_Hg38_5 --indep-pairwise 1000 100 0.9 --out indepSNP
     plink --bfile clsa_gen_v3_1_23_Hg38_5 --extract indepSNP.prune.in --make-bed --out clsa_gen_v3_1_23_Hg38_6
     
-    plink --bfile clsa_gen_v3_1_23_Hg38_6 --het --out R_check
+    plink --bfile clsa_gen_v3_1_23_Hg38_6 --check-sex 0.4 0.8
     """
 }
 
+//not used anymore
 process CALC_HET_OUTLIERS {
     label 'r_script'
     scratch false
@@ -244,6 +245,7 @@ process CALC_HET_OUTLIERS {
     '''
 }
 
+// not used anymore
 process GENOTYPE_QC_2 {
     label 'QC'
     scratch false
@@ -264,7 +266,7 @@ process GENOTYPE_QC_2 {
     sed 's/"// g' $fail_het | awk '{print\$1, \$2}'> het_fail_ind.txt
     plink --bfile clsa_gen_v3_1_23_Hg38_6 --remove het_fail_ind.txt --make-bed --out clsa_gen_v3_1_23_Hg38_7
 
-    plink --bfile clsa_gen_v3_1_23_Hg38_7 --check-sex 0.4 0.8 
+    plink --bfile clsa_gen_v3_1_23_Hg38_6 --check-sex 0.4 0.8 
     grep "PROBLEM" plink.sexcheck | awk '{print\$1,\$2}'> sex_discrepancy.txt
     plink --bfile clsa_gen_v3_1_23_Hg38_7 --remove sex_discrepancy.txt --make-bed --out clsa_gen_v3_1_23_Hg38_8 
 
@@ -301,20 +303,20 @@ process QUANT_PHENOTYPE_QC {
 
 library(dplyr)
 
-CoP6_Baseline <- read.csv("/home/justb11/projects/def-gsarah/clsa/2104010_UdM_SGagliano_Baseline/2104010_UdM_SGagliano_CoP6_Baseline.csv", header = T, row.names = 1)
+CoP6_Baseline <- read.csv("!{base_pheno}", header = T, row.names = 1)
 CoP6_Baseline$ADM_GWAS3_COM <- as.character(CoP6_Baseline$ADM_GWAS3_COM)
 
-fam <- read.table("/scratch/justb11/Full_Pipeline/work/94/5adc6a0ffcd36e7075d306f96012ea/clsa_gen_v3_1_23_Hg38_10.fam", header = F)
+fam <- read.table("!{fam}", header = F)
 
 CoP6_Edited <- CoP6_Baseline[!is.na(match(CoP6_Baseline$ADM_GWAS3_COM, fam$V2)),]
 
-sqc <- read.table("/home/justb11/projects/def-gsarah/clsa/clsa_sqc_v3.txt", header = T)
+sqc <- read.table("!{sqc}", header = T)
 sqc_subset <- sqc[,c("ADM_GWAS_COM", "batch", "ePC1", "ePC2", "ePC3", "ePC4", "ePC5", "ePC6", "ePC7", "ePC8", "ePC9", "ePC10")]
 names(sqc_subset)[1] <- "ADM_GWAS3_COM"
 
 CoP6_Cov <- CoP6_Edited[,c("ADM_GWAS3_COM", "ADM_DCS_AGE_COM")]
 
-sexcheck <- read.table("/scratch/justb11/Full_Pipeline/work/94/5adc6a0ffcd36e7075d306f96012ea/plink.sexcheck", header = T)
+sexcheck <- read.table("!{sexcheck}", header = T)
 sexcheck_ok <- sexcheck[sexcheck$STATUS == "OK",]
 CoP6_Cov$BSEX <- sexcheck_ok$SNPSEX[match(CoP6_Cov$ADM_GWAS3_COM, sexcheck_ok$IID)]
 
@@ -336,12 +338,12 @@ CoP6_means <- sapply(CoP6_Pheno, function(x) mean(x, na.rm = T))
 CoP6_NoOutliers <- CoP6_Pheno
 
 for (i in 2:ncol(CoP6_NoOutliers)){
-    CoP6_NoOutliers[[i]][CoP6_NoOutliers[[i]] > (CoP6_means[[i]] + (CoP6_SDs[[i]] * 4)) | CoP6_NoOutliers[[i]] < (CoP6_means[[i]] - (CoP6_SDs[[i]] * 4))] <- NA
+    CoP6_NoOutliers[[i]][CoP6_NoOutliers[[i]] > (CoP6_means[[i]] + (CoP6_SDs[[i]] * 5)) | CoP6_NoOutliers[[i]] < (CoP6_means[[i]] - (CoP6_SDs[[i]] * 5))] <- NA
 }
 
 FID <- fam$V1[match(CoP6_Cov_Full$ADM_GWAS3_COM, fam$V2)]
 CoP6_Cov_Full <- cbind(FID, CoP6_Cov_Full)
-CoP6_Cov_Full <- CoP6_Cov_Full[,-3]
+# CoP6_Cov_Full <- CoP6_Cov_Full[,-3]
 
 FID <- fam$V1[match(CoP6_NoOutliers$ADM_GWAS3_COM, fam$V2)]
 CoP6_NoOutliers <- cbind(FID, CoP6_NoOutliers)
@@ -351,9 +353,9 @@ names(CoP6_NoOutliers)[2] <- "IID"
 
 CoP6_Cov_ss <- CoP6_Cov_Full[,!(names(CoP6_Cov_Full) == "BSEX")]
 
-write.table(CoP6_NoOutliers, "phenotypes_bin_10.txt", row.names=F, sep="	", quote = F)
-write.table(CoP6_Cov_Full, "covariates.txt", row.names=F, sep="	", quote = F)
-write.table(CoP6_Cov_ss, "covariates_ss.txt", row.names=F, sep="	", quote = F)
+write.table(CoP6_NoOutliers, "phenotypes_bin_10.txt", row.names=F, sep="\t", quote = F)
+write.table(CoP6_Cov_Full, "covariates.txt", row.names=F, sep="\t", quote = F)
+write.table(CoP6_Cov_ss, "covariates_ss.txt", row.names=F, sep="\t", quote = F)
     '''
 }
 
@@ -390,7 +392,6 @@ process REGENIE_STEP1 {
         val(covariates)
 
     output:
-        path("fit_bin_out_*.loco")
         path("fit_bin_out_pred.list"), emit: fit_pred
 
     script:
@@ -419,7 +420,6 @@ process REGENIE_STEP1_MALE {
         val(covariates)
 
     output:
-        path("fit_bin_out_*.loco")
         path("fit_bin_out_pred.list"), emit: fit_pred
 
     script:
@@ -455,7 +455,6 @@ process REGENIE_STEP1_FEMALE {
         val(covariates)
 
     output:
-        path("fit_bin_out_*.loco")
         path("fit_bin_out_pred.list"), emit: fit_pred
 
     script:
@@ -881,11 +880,11 @@ workflow {
     //Genotype and Phenotype QC ---------------------------------------------------------
 
     genotype_QC_1 = GENOTYPE_QC_1(lifted, params.anderson_bed_gz, params.dust_masker_gz, params.mqc)
-    fail_het = CALC_HET_OUTLIERS(genotype_QC_1.r_check)
-    genotypeQCed = GENOTYPE_QC_2(genotype_QC_1.plink_files, fail_het, params.mqc, params.sqc)
+    //fail_het = CALC_HET_OUTLIERS(genotype_QC_1.r_check)
+    //genotypeQCed = GENOTYPE_QC_2(genotype_QC_1.plink_files, fail_het, params.mqc, params.sqc)
 
     //create formatted phenotype and covariate file for regenie using R
-    phenotypeQCed = QUANT_PHENOTYPE_QC(genotypeQCed.plink_files, genotypeQCed.plink_sexcheck, params.sqc, params.base_phenotypes)
+    phenotypeQCed = QUANT_PHENOTYPE_QC(genotype_QC_1.plink_files, genotype_QC_1.plink_sexcheck, params.sqc, params.base_phenotypes)
     
     //split phenotype files into seperate files for better parallization
     split_phenos = SPLIT_PHENO(phenotypeQCed.phenotypes)
@@ -894,9 +893,9 @@ workflow {
     sample_file = ADD_SEX_TO_SAMPLE(params.clsa_samples, params.clsa_plink)
 
     //step 1 regenie ------------------------------------------------------------------------
-    step1 = REGENIE_STEP1(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates)
-    step1_male = REGENIE_STEP1_MALE(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
-    step1_female = REGENIE_STEP1_FEMALE(genotypeQCed.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
+    step1 = REGENIE_STEP1(genotype_QC_1.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates)
+    step1_male = REGENIE_STEP1_MALE(genotype_QC_1.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
+    step1_female = REGENIE_STEP1_FEMALE(genotype_QC_1.plink_files, phenotypeQCed.phenotypes, phenotypeQCed.covariates_ss)
 
     //preperation for step 2
     bgens = Channel.fromPath(params.clsa_bgen)
